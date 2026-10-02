@@ -15,14 +15,14 @@ Run these in Claude Code, in either the VS Code extension or the terminal:
 /plugin install budget-guard@budget-guard
 ```
 
-Or from a shell:
+Or from a shell, if you have the `claude` CLI on your PATH. The VS Code extension doesn't add it, so extension-only users should use the slash commands above:
 
 ```
 claude plugin marketplace add mpasternak-lv/claude-budget-guard
 claude plugin install budget-guard@budget-guard
 ```
 
-To set your budget while installing from a shell, add `--config monthly_budget_usd=1200` to the install command. Otherwise you get the defaults below until you change them.
+To set your budget while installing from a shell, add `--config monthly_budget_usd=1700` to the install command. Otherwise you get the defaults below until you change them.
 
 Start a new session afterwards. The hooks run `/usr/bin/python3`, which every Mac with the Xcode command line tools has. There is nothing else to install.
 
@@ -32,7 +32,7 @@ Budget Guard has two settings. Change them at any time in Claude Code, either un
 
 | Setting | Default | What it does |
 | :- | :- | :- |
-| Monthly budget (USD) | 1000 | Your Claude Code budget for the calendar month. Set it to the monthly limit your admin gave you. |
+| Monthly budget (USD) | 300 | Your Claude Code budget for the calendar month. Set it to the monthly limit your admin gave you. |
 | 5-hour cap multiplier | 5 | How much faster than an even, round-the-clock pace a 5-hour window may spend. 5 suits normal working hours. Raise it for a looser cap. |
 
 ## What happens as you work
@@ -60,7 +60,7 @@ An override covers every Claude Code session on your machine.
 cap = multiplier x 5 hours x (budget left this month / hours left in the month)
 ```
 
-Both values are taken at the start of the 5-hour window. At the start of a 31-day month, with a $1,000 budget and a multiplier of 5, the cap is 5 x 5 x 1000 / 744, about $33.60. Spending less than that early in the month raises the cap later, and spending more lowers it, so you are always paced toward the budget you set.
+Both values are taken at the start of the 5-hour window. At the start of a 31-day month, with the default $300 budget and a multiplier of 5, the cap is 5 x 5 x 300 / 744, about $10.08. With a $1,700 budget it is about $57.12. Spending less than that early in the month raises the cap later, and spending more lowers it, so you are always paced toward the budget you set.
 
 The month-end projection uses the same idea. Spending right at the cap lands the month on your budget, so being 40% over the cap projects 40% over on what is left of your budget.
 
