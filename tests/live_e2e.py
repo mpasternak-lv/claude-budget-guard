@@ -1,9 +1,13 @@
 """Live end-to-end checks against the installed Budget Guard plugin.
 
 Drives real headless Claude Code sessions, so it needs Claude Code with the
-plugin installed and a signed-in account. It spends a few cents on Haiku. It
-never changes your settings or your override: limits are passed per session
-with --settings, and the guard's state lives in a temporary directory.
+plugin installed and a signed-in account. It spends a few cents on Haiku.
+
+Headless sessions read your real settings, so the checks change your saved
+budget to force each situation. While they run, an override suspends the
+limits in your own sessions, and on exit (pass or fail) your saved budget and
+your override are put back as they were. The guard state the checks use lives
+in a temporary directory.
 
     python3 tests/live_e2e.py            # CLAUDE_BIN overrides the claude binary
 
@@ -24,10 +28,12 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 PLUGIN_ID = "budget-guard@budget-guard"
 CLAUDE_DIR = Path(os.environ.get("CLAUDE_CONFIG_DIR", Path.home() / ".claude"))
+SETTINGS = CLAUDE_DIR / "settings.json"
+REAL_GUARD_HOME = Path.home() / ".claude" / "budget-guard"
 MODEL = "haiku"
 results: List[bool] = []
 
@@ -38,9 +44,9 @@ def find_claude() -> str:
     on_path = shutil.which("claude")
     if on_path:
         return on_path
-    bundled = sorted(glob.glob(str(Path.home() / ".vscode/extensions/anthropic.claude-code-*/resources/native-binary/claude")))
+    bundled = glob.glob(str(Path.home() / ".vscode/extensions/anthropic.claude-code-*/resources/native-binary/claude"))
     if bundled:
-        return bundled[-1]
+        return max(bundled, key=lambda p: [int(n) for n in re.findall(r"\d+", p.split("claude-code-")[1])[:3]])
     sys.exit("No claude binary found. Set CLAUDE_BIN.")
 
 
@@ -53,10 +59,11 @@ ENV["BUDGET_GUARD_HOME"] = str(GUARD_HOME)
 
 
 def installed_script() -> Path:
-    candidates = glob.glob(str(CLAUDE_DIR / "plugins/cache/budget-guard/budget-guard/*/scripts/budget_guard.py"))
-    if not candidates:
+    listing = json.loads(subprocess.run([CLAUDE, "plugin", "list", "--json"], capture_output=True, text=True).stdout)
+    entry = next((p for p in listing if p["id"] == PLUGIN_ID), None)
+    if entry is None:
         sys.exit(f"{PLUGIN_ID} is not installed. Install it first (see README).")
-    return Path(max(candidates, key=os.path.getmtime))
+    return Path(entry["installPath"]) / "scripts" / "budget_guard.py"
 
 
 SCRIPT = installed_script()
@@ -78,20 +85,37 @@ def check(name: str, ok: bool, detail: str = "") -> None:
     print(f"{'PASS' if ok else 'FAIL'}  {name}" + (f"\n      {detail}" if detail and not ok else ""))
 
 
-def settings(monthly: float, multiplier: float = 5) -> str:
-    return json.dumps({"pluginConfigs": {PLUGIN_ID: {"options": {
-        "monthly_budget_usd": monthly, "pace_multiplier": multiplier}}}})
-
-
-def claude(prompt: str, config: Optional[str] = None, stream: bool = False) -> str:
+def claude(prompt: str, stream: bool = False) -> str:
     args = [CLAUDE, "-p", prompt, "--model", MODEL]
-    if config:
-        args += ["--settings", config]
     if stream:
         args += ["--output-format", "stream-json", "--verbose"]
     done = subprocess.run(args, env=ENV, cwd=WORK, stdin=subprocess.DEVNULL,
                           capture_output=True, text=True, timeout=300)
     return done.stdout + done.stderr
+
+
+def saved_options() -> Dict[str, Any]:
+    configs = json.loads(SETTINGS.read_text()).get("pluginConfigs") or {}
+    return dict((configs.get(PLUGIN_ID) or {}).get("options") or {})
+
+
+def restore_options(original: Dict[str, Any]) -> None:
+    data = json.loads(SETTINGS.read_text())
+    configs = data.setdefault("pluginConfigs", {})
+    if original:
+        configs.setdefault(PLUGIN_ID, {})["options"] = original
+    elif PLUGIN_ID in configs:
+        configs[PLUGIN_ID].pop("options", None)
+        if not configs[PLUGIN_ID]:
+            del configs[PLUGIN_ID]
+        if not configs:
+            del data["pluginConfigs"]
+    SETTINGS.write_text(json.dumps(data, indent=2) + "\n")
+
+
+def set_budget(monthly: float, multiplier: float = 5) -> None:
+    for args in (["set", f"{monthly:.2f}"], ["set", "multiplier", f"{multiplier:g}"]):
+        subprocess.run([sys.executable, str(SCRIPT), *args], env=ENV, check=True, capture_output=True)
 
 
 def live() -> Dict[str, float]:
@@ -115,13 +139,13 @@ def budget_for_ratio(ratio: float, multiplier: float = 5) -> float:
     return s["before_window"] + cap * s["hours_left"] / (5 * multiplier)
 
 
-def set_override(minutes: float) -> None:
-    subprocess.run([sys.executable, str(SCRIPT), "allow", str(minutes)], env=ENV, check=True, capture_output=True)
+def set_override(minutes: float, env: Optional[Dict[str, str]] = None) -> None:
+    subprocess.run([sys.executable, str(SCRIPT), "allow", str(minutes)], env=env or ENV, check=True, capture_output=True)
 
 
-def run_hook(payload: Dict[str, Any], extra_env: Optional[Dict[str, str]] = None) -> subprocess.CompletedProcess:
+def run_hook(payload: Dict[str, Any]) -> subprocess.CompletedProcess:
     return subprocess.run([sys.executable, str(SCRIPT), "hook"], input=json.dumps(payload),
-                          env=dict(ENV, **(extra_env or {})), capture_output=True, text=True, timeout=30)
+                          env=ENV, capture_output=True, text=True, timeout=30)
 
 
 def stream_events(text: str) -> List[Dict[str, Any]]:
@@ -134,41 +158,32 @@ def stream_events(text: str) -> List[Dict[str, Any]]:
     return events
 
 
-def main() -> int:
-    print(f"claude: {CLAUDE}\nplugin script: {SCRIPT}\nscratch: {WORK}\n")
-
-    listing = subprocess.run([CLAUDE, "plugin", "list"], capture_output=True, text=True).stdout
-    check("plugin is installed and enabled", PLUGIN_ID in listing and "enabled" in listing.split(PLUGIN_ID)[1][:200])
-
-    # Saved values, or the manifest defaults when none are saved.
-    manifest = json.loads((SCRIPT.parent.parent / ".claude-plugin" / "plugin.json").read_text())["userConfig"]
-    saved = ((json.loads((CLAUDE_DIR / "settings.json").read_text()).get("pluginConfigs") or {})
-             .get(PLUGIN_ID, {}).get("options", {}))
-    expected = float(saved.get("monthly_budget_usd", manifest["monthly_budget_usd"]["default"]))
+def session_checks() -> None:
+    out = claude("budget set 777")
+    check("budget set in a session saves the budget", "set to $777" in out and
+          saved_options().get("monthly_budget_usd") == 777, out)
+    claude("budget set multiplier 3")
     out = claude("budget status")
-    check(f"budget status shows your configured ${expected:,.0f} budget", f"Limits: ${expected:,.0f} a month" in out, out)
-
-    out = claude("budget status", settings(777, 3))
-    check("a changed budget reaches the hook", "Limits: $777 a month, with a 5h cap at 3x pace." in out, out)
+    check("the changed limits reach the next session", "Limits: $777 a month, with a 5h cap at 3x pace." in out, out)
 
     claude("Reply with exactly: ok")  # makes sure the 5h window has spend to measure
-    locked = settings(budget_for_ratio(3.0))
-    out = claude("Say hi", locked)
+    set_budget(budget_for_ratio(3.0))
+    out = claude("Say hi")
     check("over the 5h cap, a prompt is refused", "limit reached" in out, out)
     check("the refusal states how far over", re.search(r"\$[\d.]+ \(\d+%\) over", out) is not None, out)
     check("the refusal projects the month", "comes to about $" in out, out)
     check("the refusal explains both overrides", "budget override 30" in out and " allow 30" in out, out)
 
-    out = claude("budget status", locked)
+    out = claude("budget status")
     check("budget status works while locked out", "Budget guard status:" in out and "over" in out, out)
 
-    out = claude("budget override 2", locked)
+    out = claude("budget override 2")
     check("budget override unlocks", "limits suspended until" in out, out)
-    out = claude("Reply with exactly: unlocked", locked)
+    out = claude("Reply with exactly: unlocked")
     check("after the override, a prompt goes through", "unlocked" in out.lower(), out)
-    out = claude("budget override 0", locked)
+    out = claude("budget override 0")
     check("budget override 0 cancels", "override cancelled" in out, out)
-    out = claude("Say hi", locked)
+    out = claude("Say hi")
     check("after cancelling, prompts are refused again", "limit reached" in out, out)
 
     # Mid-turn: let the prompt through with an override, then end it before the tool call.
@@ -176,7 +191,7 @@ def main() -> int:
     state = GUARD_HOME / "state.json"
     before = state.stat().st_mtime_ns
     proc = subprocess.Popen([CLAUDE, "-p", "Use the Bash tool to run: echo hello-from-tool. Then report its output.",
-                             "--model", MODEL, "--settings", locked, "--output-format", "stream-json", "--verbose"],
+                             "--model", MODEL, "--output-format", "stream-json", "--verbose"],
                             env=ENV, cwd=WORK, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, text=True)
     deadline = time.time() + 60
@@ -194,18 +209,50 @@ def main() -> int:
           text[-1500:])
     check("Claude stops and passes on the override", "budget override" in replies, replies)
 
+    out = claude("budget set 999999")
+    check("raising the budget while locked out applies to the next message",
+          "set to $999,999" in out and "limit reached" not in claude("Reply with exactly: ok"), out)
+
     # 85%, not just past 80%: other sessions keep spending while this runs.
-    warn = settings(budget_for_ratio(0.85))
-    events = stream_events(claude("Reply with exactly: ok", warn, stream=True))
+    set_budget(budget_for_ratio(0.85))
+    events = stream_events(claude("Reply with exactly: ok", stream=True))
     notices = [json.dumps(e) for e in events if e.get("type") == "system" and "Budget guard" in json.dumps(e)]
     check("near the cap, the prompt runs with a warning", bool(notices) and any(
         e.get("type") == "result" and not e.get("is_error") for e in events), json.dumps(events)[-1500:])
 
-    out = claude("Say hi", settings(max(live()["month"] - 1, 1)))
+    set_budget(max(live()["month"] - 1, 1))
+    out = claude("Say hi")
     check("over the monthly budget, a prompt is refused", "limit reached" in out and "monthly" in out, out)
     check("no projection once the month is spent", "comes to about" not in out, out)
 
-    # The installed hook, run directly.
+
+def main() -> int:
+    print(f"claude: {CLAUDE}\nplugin script: {SCRIPT}\nscratch: {WORK}\n")
+
+    listing = json.loads(subprocess.run([CLAUDE, "plugin", "list", "--json"], capture_output=True, text=True).stdout)
+    check("plugin is installed and enabled", any(p["id"] == PLUGIN_ID and p["enabled"] for p in listing))
+
+    manifest = json.loads((SCRIPT.parent.parent / ".claude-plugin" / "plugin.json").read_text())["userConfig"]
+    original = saved_options()
+    expected = float(original.get("monthly_budget_usd", manifest["monthly_budget_usd"]["default"]))
+    out = claude("budget status")
+    check(f"budget status shows your configured ${expected:,.0f} budget", f"Limits: ${expected:,.0f} a month" in out, out)
+
+    real_env = {k: v for k, v in ENV.items() if k != "BUDGET_GUARD_HOME"}
+    real_override = REAL_GUARD_HOME / "override.json"
+    real_before = real_override.read_text() if real_override.exists() else None
+    set_override(60, real_env)  # keeps your own sessions working while budgets are forced
+    try:
+        session_checks()
+    finally:
+        restore_options(original)
+        if real_before is None:
+            real_override.unlink(missing_ok=True)
+        else:
+            real_override.write_text(real_before)
+    check("your saved budget is restored", saved_options() == original, f"{saved_options()} != {original}")
+    check("your own override is restored", (real_override.read_text() if real_override.exists() else None) == real_before)
+
     for _ in range(3):
         run_hook({"hook_event_name": "PreToolUse"})
     timings = []
@@ -231,10 +278,10 @@ def main() -> int:
         set_override(0)
     check(f"an override survives busy concurrent sessions ({lost} of 10 lost)", lost == 0)
 
-    broken = run_hook({"hook_event_name": "UserPromptSubmit", "prompt": "hi"},
-                      {"CLAUDE_PLUGIN_OPTION_MONTHLY_BUDGET_USD": "not-a-number"})
+    (GUARD_HOME / "config.json").write_text("{broken")
+    broken = run_hook({"hook_event_name": "UserPromptSubmit", "prompt": "hi"})
     logged = (GUARD_HOME / "errors.log").exists() and "Traceback" in (GUARD_HOME / "errors.log").read_text()
-    check("a broken setting fails open and is logged", broken.returncode == 0 and not broken.stdout.strip() and logged)
+    check("a broken config fails open and is logged", broken.returncode == 0 and not broken.stdout.strip() and logged)
 
     passed = sum(results)
     print(f"\n{passed} of {len(results)} checks passed")

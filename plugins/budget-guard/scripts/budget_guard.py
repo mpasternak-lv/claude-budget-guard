@@ -20,19 +20,22 @@ Limits:
   of the month. A number is a fixed cap in USD.
 - daily_usd: the same, per local calendar day ("pace", a number, or null).
 
-monthly_usd and pace_multiplier come from the plugin's settings (/config in
-Claude Code). Hooks receive them as CLAUDE_PLUGIN_OPTION_* variables, and the
-terminal commands read the same saved values from settings.json. The other
-keys, and these two outside the plugin, come from config.json in the state
-directory.
+monthly_usd and pace_multiplier are the plugin's two settings, saved by Claude
+Code under pluginConfigs in settings.json. Every run reads them from there, so
+a change applies at once in every open session. Values Claude Code exports to
+hooks as CLAUDE_PLUGIN_OPTION_* (fixed when the session starts) and the
+defaults in plugin.json fill in what is not saved. The other keys, and these
+two outside the plugin, come from config.json in the state directory.
 
 The figures are estimates for a circuit breaker, not an invoice. They count
 only Claude Code on this machine, not claude.ai chat or other devices, and
 they are only as current as PRICES below.
 
 Messages the hook answers itself, without sending them to the model:
-  budget status          spend, limits, and the month-end projection
-  budget override 30     suspend the limits for 30 minutes (0 cancels)
+  budget status               spend, limits, and the month-end projection
+  budget set 1700             set the monthly budget to $1,700
+  budget set multiplier 4     set the 5-hour cap multiplier
+  budget override 30          suspend the limits for 30 minutes (0 cancels)
 
 Usage:
   budget_guard.py hook               # run as a Claude Code hook (stdin JSON)
@@ -40,6 +43,8 @@ Usage:
   budget_guard.py report [DAYS]      # per-day spend by model, default 14 days
   budget_guard.py allow MINUTES      # suspend enforcement for MINUTES
   budget_guard.py allow 0            # cancel an override
+  budget_guard.py set 1700           # set the monthly budget
+  budget_guard.py set multiplier 4   # set the 5-hour cap multiplier
 
 Standard library only, Python 3.9+.
 """
@@ -70,8 +75,10 @@ ERROR_LOG = HOME / "errors.log"
 CLAUDE_DIR = Path(os.environ.get("CLAUDE_CONFIG_DIR", Path.home() / ".claude"))
 PROJECTS_DIR = CLAUDE_DIR / "projects"
 PLUGIN_NAME = "budget-guard"
+DEFAULT_PLUGIN_ID = f"{PLUGIN_NAME}@{PLUGIN_NAME}"
 # Plugin option key -> config key. Option keys are declared in plugin.json.
 PLUGIN_OPTIONS = {"monthly_budget_usd": "monthly_usd", "pace_multiplier": "pace_multiplier"}
+SETTABLE = {"monthly": "monthly_budget_usd", "multiplier": "pace_multiplier"}
 
 # Events older than this are dropped from the state file. It must exceed the
 # longest window a limit can use (a calendar month).
@@ -116,30 +123,41 @@ Event = List[Any]  # [epoch seconds, cost USD, model ID]
 # the phrase never reaches the model or costs anything.
 OVERRIDE_PHRASE = re.compile(r"^\s*budget\s+override(?:\s+(\d+))?\s*$", re.IGNORECASE)
 STATUS_PHRASE = re.compile(r"^\s*budget\s+status\s*$", re.IGNORECASE)
+SET_PHRASE = re.compile(r"^\s*budget\s+set\s+(?:(monthly|multiplier)\s+)?\$?([\d,]+(?:\.\d+)?)\s*$", re.IGNORECASE)
 DEFAULT_OVERRIDE_MINUTES = 30
 
 
-def plugin_options() -> Dict[str, Any]:
-    """The plugin's saved options, keyed by config key.
+def settings_path() -> Path:
+    return CLAUDE_DIR / "settings.json"
 
-    Hooks get them in the environment. A terminal command does not, so it reads
-    the values Claude Code saved under pluginConfigs in settings.json.
+
+def saved_plugin_options() -> Dict[str, Any]:
+    """Options saved under pluginConfigs in settings.json, keyed by option key."""
+    try:
+        configs = json.loads(settings_path().read_text()).get("pluginConfigs") or {}
+    except (OSError, ValueError, AttributeError):
+        return {}
+    saved: Dict[str, Any] = {}
+    for plugin_id, entry in configs.items():
+        if plugin_id.split("@")[0] == PLUGIN_NAME and isinstance(entry, dict):
+            for option, value in (entry.get("options") or {}).items():
+                if option in PLUGIN_OPTIONS and value not in (None, ""):
+                    saved[option] = value
+    return saved
+
+
+def plugin_options() -> Dict[str, Any]:
+    """The plugin's settings, keyed by config key.
+
+    settings.json comes first because it is current: the CLAUDE_PLUGIN_OPTION_*
+    variables are fixed when a session starts, so reading only them would keep
+    an old budget in every open session after a change.
     """
-    found: Dict[str, Any] = {}
+    found: Dict[str, Any] = {PLUGIN_OPTIONS[o]: float(v) for o, v in saved_plugin_options().items()}
     for option, key in PLUGIN_OPTIONS.items():
         value = os.environ.get(f"CLAUDE_PLUGIN_OPTION_{option.upper()}")
-        if value not in (None, ""):
+        if key not in found and value not in (None, ""):
             found[key] = float(value)
-    if not found:
-        try:
-            configs = json.loads((CLAUDE_DIR / "settings.json").read_text()).get("pluginConfigs") or {}
-        except (OSError, ValueError, AttributeError):
-            configs = {}
-        for plugin_id, entry in configs.items():
-            if plugin_id.split("@")[0] == PLUGIN_NAME and isinstance(entry, dict):
-                for option, value in (entry.get("options") or {}).items():
-                    if option in PLUGIN_OPTIONS and value not in (None, ""):
-                        found[PLUGIN_OPTIONS[option]] = float(value)
     # Claude Code exports and saves only values the user has set, not the
     # manifest defaults, so a plugin install fills the gaps from plugin.json.
     for option, default in manifest_defaults().items():
@@ -147,15 +165,60 @@ def plugin_options() -> Dict[str, Any]:
     return found
 
 
-def manifest_defaults() -> Dict[str, Any]:
-    """userConfig defaults from plugin.json, or nothing when not run as a plugin."""
+def save_plugin_option(option: str, value: float) -> None:
+    """Save one option where Claude Code's own /plugin configure saves it.
+
+    Refuses to touch a settings.json it cannot parse, since rewriting it would
+    drop the user's other settings.
+    """
+    path = settings_path()
+    data = json.loads(path.read_text()) if path.exists() else {}
+    if not isinstance(data, dict):
+        raise ValueError(f"{path} does not hold a JSON object")
+    configs = data.setdefault("pluginConfigs", {})
+    plugin_id = next((k for k in configs if k.split("@")[0] == PLUGIN_NAME), DEFAULT_PLUGIN_ID)
+    options = configs.setdefault(plugin_id, {}).setdefault("options", {})
+    options[option] = int(value) if float(value).is_integer() else value
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".settings-")
+    with os.fdopen(fd, "w") as f:
+        json.dump(data, f, indent=2)
+        f.write("\n")
+    if path.exists():
+        os.chmod(tmp, path.stat().st_mode & 0o777)
+    os.replace(tmp, path)
+
+
+def apply_set(target: Optional[str], raw: str) -> str:
+    """Validate and save `budget set`. Returns the message for the user."""
+    option = SETTABLE[(target or "monthly").lower()]
+    value = float(raw.replace(",", ""))
+    spec = (manifest_user_config().get(option) or {})
+    low, high = spec.get("min", 1), spec.get("max")
+    if value < low or (high is not None and value > high):
+        bounds = f"between {low:g} and {high:g}" if high is not None else f"at least {low:g}"
+        return f"Budget guard: not changed. The {spec.get('title', option)} must be {bounds}."
+    try:
+        save_plugin_option(option, value)
+    except (OSError, ValueError) as error:
+        return f"Budget guard: not changed. Could not update {settings_path()}: {error}"
+    shown = f"${value:,.0f}" if option == "monthly_budget_usd" else f"{value:g}x"
+    return f"Budget guard: {spec.get('title', option)} set to {shown}. It applies from your next message."
+
+
+def manifest_user_config() -> Dict[str, Any]:
+    """userConfig from plugin.json, or nothing when not run as a plugin."""
     manifest = Path(__file__).resolve().parent.parent / ".claude-plugin" / "plugin.json"
     try:
         user_config = json.loads(manifest.read_text()).get("userConfig") or {}
     except (OSError, ValueError, AttributeError):
         return {}
-    return {option: spec["default"] for option, spec in user_config.items()
-            if option in PLUGIN_OPTIONS and isinstance(spec, dict) and "default" in spec}
+    return {k: v for k, v in user_config.items() if isinstance(v, dict)}
+
+
+def manifest_defaults() -> Dict[str, Any]:
+    return {option: spec["default"] for option, spec in manifest_user_config().items()
+            if option in PLUGIN_OPTIONS and "default" in spec}
 
 
 def load_config() -> Dict[str, Any]:
@@ -443,6 +506,11 @@ def run_hook() -> int:
             save_state(state)
             print(json.dumps({"decision": "block", "reason": "Budget guard status:\n" + status_text(config, events)}))
             return 0
+        setting = SET_PHRASE.match(prompt)
+        if setting:
+            save_state(state)
+            print(json.dumps({"decision": "block", "reason": apply_set(setting.group(1), setting.group(2))}))
+            return 0
         command = OVERRIDE_PHRASE.match(prompt)
         if command:
             minutes = float(command.group(1) or DEFAULT_OVERRIDE_MINUTES)
@@ -501,8 +569,8 @@ def status_text(config: Dict[str, Any], events: Dict[str, Event]) -> str:
     else:
         lines.append(f"Limits: ${float(config['monthly_usd']):,.0f} a month, with a 5h cap at "
                      f"{float(config['pace_multiplier']):g}x pace.")
-    lines.append("Change them in Claude Code with /config (under Budget Guard) or /plugin configure "
-                 "budget-guard@budget-guard, then start a new session.")
+    lines.append("Change them by sending a message: budget set 1700 (monthly budget) "
+                 "or budget set multiplier 4.")
     return "\n".join(lines)
 
 
@@ -558,6 +626,11 @@ def main(argv: List[str]) -> int:
         return cmd_report(int(argv[2]) if len(argv) > 2 else 14)
     if command == "allow" and len(argv) > 2:
         return cmd_allow(float(argv[2]))
+    if command == "set" and len(argv) > 2:
+        target, raw = (argv[2], argv[3]) if len(argv) > 3 else (None, argv[2])
+        message = apply_set(target, raw).replace("Budget guard: ", "")
+        print(message)
+        return 0 if "not changed" not in message else 1
     print(__doc__)
     return 2
 

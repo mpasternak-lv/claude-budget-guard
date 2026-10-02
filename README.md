@@ -8,38 +8,38 @@ It works the same in the VS Code extension and the terminal CLI.
 
 ## Install
 
-Run these in Claude Code, in either the VS Code extension or the terminal:
+Paste this into a terminal, either Terminal.app or the terminal inside VS Code. It works whether you use the VS Code extension or the CLI. The number at the end is your monthly budget in dollars:
 
 ```
-/plugin marketplace add MikeyPWhatAG/claude-budget-guard
+curl -fsSL https://raw.githubusercontent.com/mpasternak-lv/claude-budget-guard/main/install.sh | sh -s -- 1700
+```
+
+Leave off `-s -- 1700` to start with the $300 default. Then start a new Claude Code session and send `budget status` to check it is running.
+
+The script finds Claude Code on its own, including the copy bundled with the VS Code extension, so you don't need `claude` on your PATH. It needs `/usr/bin/python3`, which every Mac with the Xcode command line tools has.
+
+If you use the terminal CLI, you can also install from inside Claude Code. The VS Code extension doesn't have the `/plugin` command, so this only works in the CLI:
+
+```
+/plugin marketplace add mpasternak-lv/claude-budget-guard
 /plugin install budget-guard@budget-guard
 ```
 
-Or from a shell, if you have the `claude` CLI on your PATH. The VS Code extension doesn't add it, so extension-only users should use the slash commands above:
-
-```
-claude plugin marketplace add MikeyPWhatAG/claude-budget-guard
-claude plugin install budget-guard@budget-guard
-```
-
-To set your budget while installing from a shell, add `--config monthly_budget_usd=1700` to the install command. Otherwise you get the defaults below until you change them.
-
-Start a new session afterwards. The hooks run `/usr/bin/python3`, which every Mac with the Xcode command line tools has. There is nothing else to install.
-
 ## Set and change your limits
 
-Budget Guard has two settings. Change them at any time in Claude Code, either under `/config` (look for Budget Guard) or with `/plugin configure budget-guard@budget-guard`. Then start a new session. Sessions that are already open keep the old values until they restart. Send `budget status` in the new session to confirm the change.
-
-From a shell, this sets a $1,700 budget:
+Send one of these as a message in Claude Code. Budget Guard saves it and uses it from your next message on, in every open session.
 
 ```
-echo '{"monthly_budget_usd": "1700"}' | claude plugin configure budget-guard@budget-guard --values-stdin
+budget set 1700
+budget set multiplier 4
 ```
 
 | Setting | Default | What it does |
 | :- | :- | :- |
 | Monthly budget (USD) | 300 | Your Claude Code budget for the calendar month. Set it to the monthly limit your admin gave you. |
 | 5-hour cap multiplier | 5 | How much faster than an even, round-the-clock pace a 5-hour window may spend. 5 suits normal working hours. Raise it for a looser cap. |
+
+`budget set` saves to the same place as the CLI's `/plugin configure budget-guard@budget-guard`, so either way works in the CLI.
 
 ## What happens as you work
 
@@ -55,6 +55,8 @@ Type these as a message. Budget Guard answers them itself, so they never reach t
 | Message | What it does |
 | :- | :- |
 | `budget status` | Shows your spend against each limit, the month-end projection, and your settings |
+| `budget set 1700` | Sets your monthly budget |
+| `budget set multiplier 4` | Sets the 5-hour cap multiplier |
 | `budget override 30` | Suspends the limits for 30 minutes, or any number of minutes you give |
 | `budget override 0` | Ends an override early |
 
@@ -80,16 +82,21 @@ The month-end projection uses the same idea. Spending right at the cap lands the
 
 ## Updates and removal
 
-Updates come from this repository. To move to the latest version, run both commands, then start a new session:
+To update, run the install command again. It updates an existing install instead of reinstalling it, and keeps your settings. Then start a new session.
+
+To remove it:
 
 ```
-claude plugin marketplace update budget-guard
-claude plugin update budget-guard@budget-guard
+curl -fsSL https://raw.githubusercontent.com/mpasternak-lv/claude-budget-guard/main/install.sh | sh -s -- --uninstall
 ```
 
-The first fetches the latest list of versions. On its own it leaves your installed version unchanged.
+## Mirror
 
-To remove it, run `/plugin uninstall budget-guard@budget-guard`. Its saved state is in `~/.claude/budget-guard`, which you can delete afterwards.
+A mirror of this repository is kept at [MikeyPWhatAG/claude-budget-guard](https://github.com/MikeyPWhatAG/claude-budget-guard). To install from the mirror instead, use:
+
+```
+curl -fsSL https://raw.githubusercontent.com/MikeyPWhatAG/claude-budget-guard/main/install.sh | BUDGET_GUARD_REPO=MikeyPWhatAG/claude-budget-guard sh
+```
 
 ## Development
 
@@ -100,7 +107,7 @@ python3 -m unittest discover -s tests -v
 claude plugin validate .
 ```
 
-`tests/live_e2e.py` checks the installed plugin end to end through real headless Claude Code sessions: lockouts, overrides, a mid-turn stop, warnings, hook latency, concurrent sessions, and failing open. It spends a few cents on Haiku and never changes your settings. Run it after installing a new version:
+`tests/live_e2e.py` checks the installed plugin end to end through real headless Claude Code sessions: lockouts, overrides, a mid-turn stop, `budget set`, warnings, hook latency, concurrent sessions, and failing open. It spends a few cents on Haiku. While it runs, it suspends the limits in your other sessions and changes your saved budget, then restores both. Run it after installing a new version:
 
 ```
 python3 tests/live_e2e.py

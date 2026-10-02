@@ -518,7 +518,7 @@ class HookTest(unittest.TestCase):
         status = self.run_script("status").stdout
         self.assertIn("monthly $0.00 of $1200.00", status)
         self.assertIn("Limits: $1,200 a month, with a 5h cap at 3x pace.", status)
-        self.assertIn("/config", status)
+        self.assertIn("budget set 1700", status)
 
     def test_defaults_come_from_the_plugin_manifest(self) -> None:
         # Claude Code exports only values the user saved, so the defaults must come from plugin.json.
@@ -527,6 +527,69 @@ class HookTest(unittest.TestCase):
         monthly, multiplier = manifest["monthly_budget_usd"]["default"], manifest["pace_multiplier"]["default"]
         self.assertIn(f"Limits: ${monthly:,.0f} a month, with a 5h cap at {multiplier:g}x pace.", status)
         self.assertNotIn("comes to about", status)  # no spend in the window, so no projection
+
+    def saved_options(self) -> Dict[str, Any]:
+        settings = json.loads((self.claude_dir / "settings.json").read_text())
+        return settings["pluginConfigs"]["budget-guard@budget-guard"]["options"]
+
+    def test_budget_set_saves_where_plugin_configure_does(self) -> None:
+        self.claude_dir.mkdir(exist_ok=True)
+        (self.claude_dir / "settings.json").write_text(json.dumps({"model": "opus", "permissions": {"allow": ["Read"]}}))
+        out = self.hook("UserPromptSubmit", "budget set 1700")
+        self.assertEqual(out["decision"], "block")  # answered by the hook, never sent to the model
+        self.assertIn("set to $1,700", out["reason"])
+        self.assertEqual(self.saved_options(), {"monthly_budget_usd": 1700})
+        settings = json.loads((self.claude_dir / "settings.json").read_text())
+        self.assertEqual(settings["model"], "opus")  # the user's other settings survive
+        self.assertEqual(settings["permissions"], {"allow": ["Read"]})
+        self.assertIn("Limits: $1,700 a month", self.run_script("status").stdout)
+
+    def test_budget_set_forms(self) -> None:
+        for prompt, expected in (("budget set $2,500", 2500), ("Budget Set Monthly 900", 900), ("budget set 1200.50", 1200.5)):
+            self.assertIn("set to", self.hook("UserPromptSubmit", prompt)["reason"], prompt)
+            self.assertEqual(self.saved_options()["monthly_budget_usd"], expected, prompt)
+        self.assertIn("set to 4x", self.hook("UserPromptSubmit", "budget set multiplier 4")["reason"])
+        self.assertEqual(self.saved_options(), {"monthly_budget_usd": 1200.5, "pace_multiplier": 4})
+
+    def test_budget_set_rejects_out_of_range_values(self) -> None:
+        self.hook("UserPromptSubmit", "budget set 500")
+        for prompt in ("budget set 0", "budget set multiplier 25", "budget set multiplier 0"):
+            self.assertIn("not changed", self.hook("UserPromptSubmit", prompt)["reason"], prompt)
+        self.assertEqual(self.saved_options(), {"monthly_budget_usd": 500})
+
+    def test_budget_set_reuses_the_installed_plugin_id(self) -> None:
+        self.claude_dir.mkdir(exist_ok=True)
+        (self.claude_dir / "settings.json").write_text(json.dumps(
+            {"pluginConfigs": {"budget-guard@my-fork": {"options": {"pace_multiplier": 3}}}}))
+        self.hook("UserPromptSubmit", "budget set 800")
+        configs = json.loads((self.claude_dir / "settings.json").read_text())["pluginConfigs"]
+        self.assertEqual(configs, {"budget-guard@my-fork": {"options": {"pace_multiplier": 3, "monthly_budget_usd": 800}}})
+
+    def test_budget_set_refuses_an_unreadable_settings_file(self) -> None:
+        self.claude_dir.mkdir(exist_ok=True)
+        (self.claude_dir / "settings.json").write_text("{broken")
+        self.assertIn("not changed", self.hook("UserPromptSubmit", "budget set 800")["reason"])
+        self.assertEqual((self.claude_dir / "settings.json").read_text(), "{broken")
+
+    def test_saved_value_beats_the_value_fixed_at_session_start(self) -> None:
+        # A running session keeps the CLAUDE_PLUGIN_OPTION_* it started with; a change must still apply.
+        self.env["CLAUDE_PLUGIN_OPTION_MONTHLY_BUDGET_USD"] = "300"
+        self.spend(100)
+        self.hook("UserPromptSubmit", "budget set 5000")
+        self.assertIsNone(self.hook("UserPromptSubmit"))  # $100 in 5h is under the $5,000 pace
+        self.assertIn("Limits: $5,000 a month", self.run_script("status").stdout)
+
+    def test_budget_set_works_while_locked_out(self) -> None:
+        self.lock_out()
+        self.assertIn("set to $9,000", self.hook("UserPromptSubmit", "budget set 9000")["reason"])
+
+    def test_set_command(self) -> None:
+        ok = self.run_script("set", "1700")
+        self.assertEqual(ok.returncode, 0, ok.stderr)
+        self.assertIn("set to $1,700", ok.stdout)
+        self.assertEqual(self.run_script("set", "multiplier", "3").returncode, 0)
+        self.assertEqual(self.saved_options(), {"monthly_budget_usd": 1700, "pace_multiplier": 3})
+        self.assertEqual(self.run_script("set", "0").returncode, 1)
 
     def test_status_outside_a_plugin_without_a_budget_says_so(self) -> None:
         loose = Path(self.tmp.name) / "loose_budget_guard.py"
@@ -542,7 +605,7 @@ class HookTest(unittest.TestCase):
             out = self.hook("UserPromptSubmit", prompt)
             self.assertEqual(out["decision"], "block")
             self.assertIn("monthly $2.00 of $1000.00", out["reason"])
-            self.assertIn("/config", out["reason"])
+            self.assertIn("budget set 1700", out["reason"])
         self.assertIsNone(self.hook("UserPromptSubmit", "budget status please"))  # an ordinary prompt
 
     def test_status_phrase_works_while_locked_out(self) -> None:
