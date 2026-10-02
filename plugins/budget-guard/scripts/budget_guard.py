@@ -501,7 +501,7 @@ def status_text(config: Dict[str, Any], events: Dict[str, Event]) -> str:
     else:
         lines.append(f"Limits: ${float(config['monthly_usd']):,.0f} a month, with a 5h cap at "
                      f"{float(config['pace_multiplier']):g}x pace.")
-    lines.append("Change them in Claude Code with /config, under Budget Guard.")
+    lines.append("Change them in Claude Code with /config (under Budget Guard) or /plugin configure budget-guard@budget-guard.")
     return "\n".join(lines)
 
 

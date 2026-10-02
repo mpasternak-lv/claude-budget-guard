@@ -22,11 +22,13 @@ claude plugin marketplace add mpasternak-lv/claude-budget-guard
 claude plugin install budget-guard@budget-guard
 ```
 
+To set your budget while installing from a shell, add `--config monthly_budget_usd=1200` to the install command. Otherwise you get the defaults below until you change them.
+
 Start a new session afterwards. The hooks run `/usr/bin/python3`, which every Mac with the Xcode command line tools has. There is nothing else to install.
 
 ## Set and change your limits
 
-Budget Guard has two settings. You can change them at any time under `/config` in Claude Code (look for Budget Guard), and a change applies from your next message.
+Budget Guard has two settings. Change them at any time in Claude Code, either under `/config` (look for Budget Guard) or with `/plugin configure budget-guard@budget-guard`. A change applies from your next message.
 
 | Setting | Default | What it does |
 | :- | :- | :- |
