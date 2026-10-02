@@ -345,6 +345,14 @@ class HookTest(unittest.TestCase):
             f.write(line(msg_id or f"m{time.time_ns()}", time.time() - ago_s, dollars(amount)))
 
     def config(self, **values: Any) -> None:
+        """Set limits the way a plugin install receives them.
+
+        monthly_usd and pace_multiplier arrive as plugin options and take
+        precedence over config.json, so they go into the hook's environment.
+        """
+        for key, option in (("monthly_usd", "MONTHLY_BUDGET_USD"), ("pace_multiplier", "PACE_MULTIPLIER")):
+            if key in values:
+                self.env[f"CLAUDE_PLUGIN_OPTION_{option}"] = str(values.pop(key))
         (self.home / "config.json").write_text(json.dumps(values))
 
     def run_script(self, *args: str, stdin: str = "") -> subprocess.CompletedProcess:
@@ -493,7 +501,7 @@ class HookTest(unittest.TestCase):
         self.assertIn("comes to about $", message)
 
     def test_plugin_options_from_the_environment_set_the_limits(self) -> None:
-        self.config(monthly_usd=50, rolling_hours_usd={"5": "pace"}, pace_multiplier=1)
+        (self.home / "config.json").write_text(json.dumps({"monthly_usd": 50, "pace_multiplier": 1}))
         self.spend(100)  # over a $50 month
         self.env.update(CLAUDE_PLUGIN_OPTION_MONTHLY_BUDGET_USD="5000", CLAUDE_PLUGIN_OPTION_PACE_MULTIPLIER="24")
         self.assertIsNone(self.hook("UserPromptSubmit"))  # the options win over config.json
