@@ -74,11 +74,14 @@ The month-end projection uses the same idea. Spending right at the cap lands the
 
 ## Updates and removal
 
-Updates come from this repository. To fetch the latest version yourself:
+Updates come from this repository. To move to the latest version, run both commands, then start a new session:
 
 ```
 claude plugin marketplace update budget-guard
+claude plugin update budget-guard@budget-guard
 ```
+
+The first fetches the latest list of versions. On its own it leaves your installed version unchanged.
 
 To remove it, run `/plugin uninstall budget-guard@budget-guard`. Its saved state is in `~/.claude/budget-guard`, which you can delete afterwards.
 
