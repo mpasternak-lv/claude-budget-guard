@@ -54,20 +54,44 @@ except ValueError:
 print(next((e.get("repo", "") for e in entries if e.get("name") == "budget-guard"), ""))
 ')"
 
+# Runs a claude command, dropping its "/plugin configure" hint: the VS Code
+# extension has no /plugin command, and `budget set` replaces it.
+quiet() {
+  output="$("$@" 2>&1)" || { printf '%s\n' "$output" >&2; return 1; }
+  printf '%s\n' "$output" | grep -v "userConfig options not yet set" || true
+}
+
+# The saved settings as a JSON object of strings, the shape --values-stdin takes.
+saved_settings="$(/usr/bin/python3 -c '
+import json, os, sys
+path = os.path.join(os.environ.get("CLAUDE_CONFIG_DIR", os.path.expanduser("~/.claude")), "settings.json")
+try:
+    configs = json.load(open(path)).get("pluginConfigs") or {}
+except (OSError, ValueError, AttributeError):
+    configs = {}
+options = (configs.get("budget-guard@budget-guard") or {}).get("options") or {}
+print(json.dumps({k: str(v) for k, v in options.items()}) if options else "")
+')"
+
 if [ "$current_repo" = "$REPO" ]; then
-  "$CLAUDE" plugin marketplace update "$MARKETPLACE"
+  quiet "$CLAUDE" plugin marketplace update "$MARKETPLACE"
 else
   if [ -n "$current_repo" ]; then
     echo "Switching Budget Guard from $current_repo to $REPO"
-    "$CLAUDE" plugin marketplace remove "$MARKETPLACE"
+    # Removing a marketplace deletes its plugins' saved settings; they are put back below.
+    quiet "$CLAUDE" plugin marketplace remove "$MARKETPLACE"
   fi
-  "$CLAUDE" plugin marketplace add "$REPO"
+  quiet "$CLAUDE" plugin marketplace add "$REPO"
 fi
 
 if "$CLAUDE" plugin list --json 2>/dev/null | grep -q "\"$PLUGIN\""; then
-  "$CLAUDE" plugin update "$PLUGIN"
+  quiet "$CLAUDE" plugin update "$PLUGIN"
 else
-  "$CLAUDE" plugin install "$PLUGIN"
+  quiet "$CLAUDE" plugin install "$PLUGIN"
+  if [ -n "$saved_settings" ]; then
+    printf '%s' "$saved_settings" | quiet "$CLAUDE" plugin configure "$PLUGIN" --values-stdin
+    echo "Kept your saved settings."
+  fi
 fi
 
 SCRIPT="$("$CLAUDE" plugin list --json | /usr/bin/python3 -c '
