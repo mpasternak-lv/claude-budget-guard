@@ -1,7 +1,7 @@
 {
   "name": "budget-guard",
   "displayName": "Budget Guard",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Short-term spend limits for usage-billed Claude Code: a 5-hour cap paced to your monthly budget, enforced on prompts and tool calls.",
   "author": {
     "name": "mpasternakLV"

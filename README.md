@@ -28,7 +28,13 @@ Start a new session afterwards. The hooks run `/usr/bin/python3`, which every Ma
 
 ## Set and change your limits
 
-Budget Guard has two settings. Change them at any time in Claude Code, either under `/config` (look for Budget Guard) or with `/plugin configure budget-guard@budget-guard`. A change applies from your next message.
+Budget Guard has two settings. Change them at any time in Claude Code, either under `/config` (look for Budget Guard) or with `/plugin configure budget-guard@budget-guard`. Then start a new session. Sessions that are already open keep the old values until they restart. Send `budget status` in the new session to confirm the change.
+
+From a shell, this sets a $1,700 budget:
+
+```
+echo '{"monthly_budget_usd": "1700"}' | claude plugin configure budget-guard@budget-guard --values-stdin
+```
 
 | Setting | Default | What it does |
 | :- | :- | :- |
@@ -92,6 +98,12 @@ The guard is one standard-library Python script, `plugins/budget-guard/scripts/b
 ```
 python3 -m unittest discover -s tests -v
 claude plugin validate .
+```
+
+`tests/live_e2e.py` checks the installed plugin end to end through real headless Claude Code sessions: lockouts, overrides, a mid-turn stop, warnings, hook latency, concurrent sessions, and failing open. It spends a few cents on Haiku and never changes your settings. Run it after installing a new version:
+
+```
+python3 tests/live_e2e.py
 ```
 
 Bump `version` in `plugins/budget-guard/.claude-plugin/plugin.json` with every change. Installed copies stay on the version they have until it changes.
