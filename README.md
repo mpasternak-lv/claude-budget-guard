@@ -11,14 +11,14 @@ It works the same in the VS Code extension and the terminal CLI.
 Run these in Claude Code, in either the VS Code extension or the terminal:
 
 ```
-/plugin marketplace add mpasternak-lv/claude-budget-guard
+/plugin marketplace add MikeyPWhatAG/claude-budget-guard
 /plugin install budget-guard@budget-guard
 ```
 
 Or from a shell, if you have the `claude` CLI on your PATH. The VS Code extension doesn't add it, so extension-only users should use the slash commands above:
 
 ```
-claude plugin marketplace add mpasternak-lv/claude-budget-guard
+claude plugin marketplace add MikeyPWhatAG/claude-budget-guard
 claude plugin install budget-guard@budget-guard
 ```
 

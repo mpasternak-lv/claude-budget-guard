@@ -2,7 +2,7 @@
   "name": "budget-guard",
   "description": "Budget Guard: short-term spend limits for usage-billed Claude Code.",
   "owner": {
-    "name": "mpasternakLV"
+    "name": "MikeyPWhatAG"
   },
   "plugins": [
     {
