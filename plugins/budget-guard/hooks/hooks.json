@@ -1,0 +1,29 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/budget_guard.py", "hook"],
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/budget_guard.py", "hook"],
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

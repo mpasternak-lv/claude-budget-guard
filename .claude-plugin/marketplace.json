@@ -1,0 +1,14 @@
+{
+  "name": "budget-guard",
+  "description": "Budget Guard: short-term spend limits for usage-billed Claude Code.",
+  "owner": {
+    "name": "mpasternakLV"
+  },
+  "plugins": [
+    {
+      "name": "budget-guard",
+      "source": "./plugins/budget-guard",
+      "description": "A 5-hour spend cap paced to your monthly budget, enforced on prompts and tool calls."
+    }
+  ]
+}
